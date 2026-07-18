@@ -6,3 +6,4 @@ led_frame_*.ppm
 led_montage.png
 *.output
 *.wav
+render_*.png
