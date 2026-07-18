@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+logs_*.txt
+led_frame_*.ppm
+led_montage.png
+*.output

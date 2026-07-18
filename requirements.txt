@@ -1,0 +1,8 @@
+numpy>=1.26
+moderngl>=5.10
+moderngl-window>=2.4
+pyglet>=2.0
+sounddevice>=0.4      # live mic input (optional)
+soundfile>=0.12       # WAV/FLAC/OGG playback (optional)
+# torch>=2.4          # OPTIONAL — only for cocycle/givens.py (differentiable/GPU orthogonal rotor, P1).
+#                       The numpy core + run_headless.py do NOT need it; keep the core venv torch-free.
