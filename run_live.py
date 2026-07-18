@@ -19,6 +19,8 @@ P = argparse.ArgumentParser()
 P.add_argument("--audio", default="synth", choices=["synth", "mic", "file"])
 P.add_argument("--file", default=None)
 P.add_argument("--n", type=int, default=200000)
+P.add_argument("--projector", default="auto", choices=["auto", "gpu", "cpu"],
+               help="auto/gpu = differentiable GivensProjector on the GPU; cpu = numpy Projector")
 ARGS, _ = P.parse_known_args()
 
 
@@ -30,8 +32,10 @@ class App(mglw.WindowConfig):
 
     def __init__(self, **kw):
         super().__init__(**kw)
-        self.comp = default_composition(n=ARGS.n, audio=ARGS.audio, path=ARGS.file)
+        self.comp = default_composition(n=ARGS.n, audio=ARGS.audio, path=ARGS.file, projector=ARGS.projector)
         self.comp.setup()
+        proj = type(self.comp.components[3]).__name__
+        print(f"[COCYCLE] projector={proj}  device={self.comp.ctx.meta.get('proj_device', 'cpu/numpy')}  particles={ARGS.n}")
         self.renderer = GLRenderer(self.ctx, ARGS.n)
         self.fade = self.ctx.program(
             vertex_shader="#version 330\nin vec2 p; void main(){ gl_Position=vec4(p,0,1);}",
