@@ -92,8 +92,8 @@ def segment_swing(shot, t_impact):
     while i > 0 and abs(omega[i - 1]) > qthr and t[top] - t[i - 1] < 1.6:
         i -= 1                                                 # back through the backswing to takeaway
     start = i
-    end = imp
-    while end < len(m) - 1 and abs(omega[end + 1]) > qthr: end += 1          # follow-through end
+    end = imp                                                # follow-through end: use |gyro| (signed omega
+    while end < len(m) - 1 and m[end + 1] > 0.10 * peak: end += 1            # zero-crosses right after impact)
     back = max(t[top] - t[start], 1e-6); down = max(t[imp] - t[top], 1e-6)
     return {"takeaway": t[start], "top": t[top], "impact": t[imp], "follow": t[end], "peakgyro_t": t[gp],
             "backswing_s": float(back), "downswing_s": float(down), "tempo_ratio": float(back / down),
@@ -152,10 +152,52 @@ def spectral_downswing(shot, seg):
     return {"spec_centroid_hz": cen, "spec_bandwidth_hz": bw, "spec_rolloff_hz": roll, "spec_flatness": flat}
 
 
+def _signed_omega(shot, seg):
+    """Signed angular velocity on the swing's principal axis (same construction as segment_swing)."""
+    t, g = shot["GD"]
+    a0 = min(max(int(np.searchsorted(t, seg["impact"] - 0.5)), 0), len(t) - 2)
+    a1 = min(max(int(np.searchsorted(t, seg["impact"] + 0.02)), a0 + 2), len(t))
+    u = np.linalg.svd(g[a0:a1], full_matrices=False)[2][0]
+    om = g @ u
+    imp = min(int(np.searchsorted(t, seg["impact"])), len(om) - 1)
+    if om[imp] < 0: om = -om                                     # orient: downswing positive
+    return t, om
+
+
+def biomech_features(shot, seg):
+    """Double-pendulum / kinematic-sequence descriptors (ASMI phase model) from the shaft's signed omega.
+    The wrist release (lower-pendulum initiation) is the angular-acceleration peak inside the downswing:
+    its timing is the classic 'lag vs casting' axis -- early release (casting) bleeds speed before impact.
+    Single shaft IMU: these are club-segment proxies; no pelvis/torso sensors, so no direct X-factor."""
+    t, om = _signed_omega(shot, seg)
+    dt = (t[-1] - t[0]) / max(len(t) - 1, 1)
+    k = max(3, int(0.007 / dt) | 1)
+    oms = np.convolve(om, np.ones(k) / k, "same")                # ~7 ms smoothing before differentiating
+    alpha = np.gradient(oms, dt)
+    i0, i1 = np.searchsorted(t, seg["top"]), np.searchsorted(t, seg["impact"])
+    i1 = max(i1, i0 + 4)
+    dw_a, dw_o = alpha[i0:i1], oms[i0:i1]; n = len(dw_a)
+    rel = int(np.argmax(dw_a))                                   # release = peak angular acceleration
+    release_onset = rel / max(n - 1, 1)                          # late (->1) = held lag; early = casting
+    lag_retention = float(np.clip(dw_o[n // 2] / (dw_o.max() + 1e-9), 0, 2))   # high at mid-downswing = cast
+    q = max(n // 4, 1)                                           # summation of segmental velocities:
+    late_speed_ratio = float(np.mean(np.abs(dw_o[-q:])) / (np.mean(np.abs(dw_o[:q])) + 1e-9))
+    dwell = float(np.sum(np.abs(oms[np.abs(t - seg["top"]) < 0.3]) < 0.05 * oms.max()) * dt)   # transition
+    j0 = np.searchsorted(t, seg["takeaway"])
+    back_smooth = float(np.std(alpha[j0:i0]) / (np.abs(oms).max() / dt * 1e-3 + 1e-9))         # backswing jerk
+    f1 = np.searchsorted(t, min(seg["follow"], seg["impact"] + 0.35))
+    follow_decel = float(-alpha[i1:max(f1, i1 + 2)].min()) if f1 > i1 + 1 else 0.0             # chain braking
+    return {"release_onset": float(release_onset), "lag_retention": lag_retention,
+            "late_speed_ratio": late_speed_ratio, "transition_dwell_s": dwell,
+            "backswing_smooth": back_smooth, "follow_decel_dps2": follow_decel}
+
+
 FEATURES = ("impact_g", "peak_gyro_dps", "club_speed_ms", "backswing_s", "downswing_s", "tempo_ratio",
             "release_ratio", "geo_addr_impact_rad", "s3_arc_len", "swing_planarity", "swing_plane_tilt_deg",
             "euler_impact_x", "euler_impact_y", "euler_impact_z",
-            "spec_centroid_hz", "spec_bandwidth_hz", "spec_rolloff_hz", "spec_flatness")
+            "spec_centroid_hz", "spec_bandwidth_hz", "spec_rolloff_hz", "spec_flatness",
+            "release_onset", "lag_retention", "late_speed_ratio", "transition_dwell_s",
+            "backswing_smooth", "follow_decel_dps2")
 
 
 def swing_features(shot):
@@ -170,6 +212,7 @@ def swing_features(shot):
          "backswing_s": seg["backswing_s"], "downswing_s": seg["downswing_s"],
          "tempo_ratio": seg["tempo_ratio"], "release_ratio": release}
     f.update(quat_geometry(shot, seg)); f.update(spectral_downswing(shot, seg))
+    f.update(biomech_features(shot, seg))
     return f, seg
 
 
