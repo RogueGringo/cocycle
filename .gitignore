@@ -12,3 +12,6 @@ render_*.png
 cocycle_panel.html
 timeline.npz
 cocycle_bake.json
+
+cocycle_qmap.html
+imprint_montage.png
