@@ -7,7 +7,7 @@ import numpy as np
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 from cocycle.swing import (load_shot, detect_impact, segment_swing, quat_geometry, swing_features,
-                           swing_timeline, bake_session, FEATURES, _mag, _rate)
+                           swing_timeline, bake_session, swing_consistency, FEATURES, _mag, _rate)
 from cocycle.engine import Context
 from cocycle.components.field import TopologyField
 from cocycle.components.projector import Projector
@@ -52,17 +52,29 @@ def main():
     moved = float(np.linalg.norm(c.get("field")["X"] - X0, axis=1).mean())
     s6 = moved > 1e-3 and np.isfinite(c.get("proj")["xy"]).all()
 
+    # S7: label-free launch proxies physically sane + a session repeatability signature
+    f1, _ = swing_features(shot)
+    cons = swing_consistency(ids, names, M)
+    s7 = (15 < f1["club_speed_ms"] < 70 and 0 <= f1["swing_plane_tilt_deg"] <= 90
+          and 0 <= f1["release_ratio"] <= 1.5 and np.isfinite(cons["cv"]).all() and col("club_speed_ms").std() > 0)
+
     print(f"[SWING] Shot1: accel {ra:.0f} Hz, quat {rq:.0f} Hz | impact {imp_g:.1f} g @ t={t_imp:.2f}s over {base:.2f} g baseline")
     print(f"[SWING] tempo: back {seg['backswing_s']:.3f}s / down {seg['downswing_s']:.3f}s = {seg['tempo_ratio']:.2f}:1 | "
           f"peak gyro {seg['peak_gyro_dps']:.0f} deg/s")
     print(f"[SWING] S^3 geom: geodesic(addr,impact) {geo['geo_addr_impact_rad']:.2f} rad, arc {geo['s3_arc_len']:.2f} rad, "
           f"planarity {geo['swing_planarity']:.3f}")
+    print(f"[SWING] Shot1 launch proxies: club_speed {f1['club_speed_ms']:.1f} m/s ({f1['club_speed_ms']*2.237:.0f} mph), "
+          f"plane_tilt {f1['swing_plane_tilt_deg']:.0f} deg, release {f1['release_ratio']:.2f}")
     print(f"[SWING] session matrix: {M.shape[0]} shots x {M.shape[1]} features (launch-monitor-join-ready)")
     if M.size:
-        print(f"        peak_gyro   {col('peak_gyro_dps').mean():7.0f} +/- {col('peak_gyro_dps').std():5.0f} deg/s")
+        print(f"        club_speed  {col('club_speed_ms').mean():7.1f} +/- {col('club_speed_ms').std():5.1f} m/s")
         print(f"        tempo_ratio {col('tempo_ratio').mean():7.2f} +/- {col('tempo_ratio').std():5.2f}")
-        print(f"        impact_g    {col('impact_g').mean():7.1f} +/- {col('impact_g').std():5.1f} g")
         print(f"        spec_cen_hz {col('spec_centroid_hz').mean():7.1f} +/- {col('spec_centroid_hz').std():5.1f} Hz")
+        order = np.argsort(cons["cv"])
+        rep = ", ".join(f"{names[j]} {cons['cv'][j]*100:.0f}%" for j in order[:3])
+        vary = ", ".join(f"{names[j]} {cons['cv'][j]*100:.0f}%" for j in order[-3:][::-1])
+        print(f"[SWING] repeatability (CV): most consistent -> {rep}   |   most variable -> {vary}")
+        print(f"[SWING] outlier shots (>2.5 sigma, candidate mishits): {list(cons['outliers'].keys()) or 'none'}")
 
     checks = {
         "S1 shot bundle parses: streams present, multi-rate, finite": s1,
@@ -71,6 +83,7 @@ def main():
         "S4 S^3 geometry well-formed: unit quats, geodesic, planarity, arc": s4,
         "S5 session matrix finite AND discriminative across shots": s5,
         "S6 swing transposes into a COCYCLE regime (field advects)": s6,
+        "S7 label-free launch proxies sane + repeatability signature computed": s7,
     }
     print("\n[SWING] acceptance criteria:")
     for k, v in checks.items(): print(f"    {'PASS' if v else 'FAIL'}  {k}")

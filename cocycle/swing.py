@@ -12,6 +12,14 @@ from .signal import bake_signal, BakeParams, Timeline
 
 NEED = ("AD", "GD", "SFQ", "SFEA")               # accel, gyro, quaternion, euler (SFLA optional)
 _TS = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})")
+CLUB_LEN = 1.12                                  # m, grip->clubhead radius assumption for the speed proxy
+
+
+def _quat_to_R(q):
+    w, x, y, z = q
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                     [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                     [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
 
 
 def _load_csv(text):
@@ -87,7 +95,7 @@ def segment_swing(shot, t_impact):
     end = imp
     while end < len(m) - 1 and abs(omega[end + 1]) > qthr: end += 1          # follow-through end
     back = max(t[top] - t[start], 1e-6); down = max(t[imp] - t[top], 1e-6)
-    return {"takeaway": t[start], "top": t[top], "impact": t[imp], "follow": t[end],
+    return {"takeaway": t[start], "top": t[top], "impact": t[imp], "follow": t[end], "peakgyro_t": t[gp],
             "backswing_s": float(back), "downswing_s": float(down), "tempo_ratio": float(back / down),
             "peak_gyro_dps": peak}
 
@@ -111,12 +119,16 @@ def quat_geometry(shot, seg):
     tg, g = shot["GD"]; dw = (tg >= seg["top"]) & (tg <= seg["impact"])
     gv = g[dw]
     if len(gv) > 2:
-        s = np.linalg.svd(gv, compute_uv=False)
+        _, s, Vt = np.linalg.svd(gv, full_matrices=False)
         planarity = float(s[0] ** 2 / (np.sum(s ** 2) + 1e-12))       # fraction of angular-vel variance in 1 axis
+        axis = Vt[0]
     else:
-        planarity = 0.0
+        planarity = 0.0; axis = np.array([0.0, 0.0, 1.0])
+    aw = _quat_to_R(qi) @ axis; aw /= np.linalg.norm(aw) + 1e-12      # swing-plane normal -> world frame @ impact
+    plane_tilt = float(np.degrees(np.arccos(np.clip(abs(aw[2]), 0, 1))))  # tilt from vertical (gravity ~ world Z)
     te, ea = shot["SFEA"]; euler_imp = _interp_row(te, ea, seg["impact"])
     return {"geo_addr_impact_rad": geo, "s3_arc_len": arc, "swing_planarity": planarity,
+            "swing_plane_tilt_deg": plane_tilt,
             "euler_impact_x": float(euler_imp[0]), "euler_impact_y": float(euler_imp[1]),
             "euler_impact_z": float(euler_imp[2])}
 
@@ -140,20 +152,35 @@ def spectral_downswing(shot, seg):
     return {"spec_centroid_hz": cen, "spec_bandwidth_hz": bw, "spec_rolloff_hz": roll, "spec_flatness": flat}
 
 
-FEATURES = ("impact_g", "peak_gyro_dps", "backswing_s", "downswing_s", "tempo_ratio",
-            "geo_addr_impact_rad", "s3_arc_len", "swing_planarity",
+FEATURES = ("impact_g", "peak_gyro_dps", "club_speed_ms", "backswing_s", "downswing_s", "tempo_ratio",
+            "release_ratio", "geo_addr_impact_rad", "s3_arc_len", "swing_planarity", "swing_plane_tilt_deg",
             "euler_impact_x", "euler_impact_y", "euler_impact_z",
             "spec_centroid_hz", "spec_bandwidth_hz", "spec_rolloff_hz", "spec_flatness")
 
 
 def swing_features(shot):
-    """One shot -> the scalar feature vector (the 'model' half of inference:model:output)."""
+    """One shot -> the scalar feature vector (the 'model' half of inference:model:output). Includes label-free
+    launch proxies: club_speed_ms = peak angular velocity x CLUB_LEN (rigid-shaft radius assumption; validate
+    later against a real launch monitor), and release_ratio = when the gyro peaks within the downswing."""
     t_imp, imp_g = detect_impact(shot)
     seg = segment_swing(shot, t_imp)
-    f = {"impact_g": imp_g, "peak_gyro_dps": seg["peak_gyro_dps"], "backswing_s": seg["backswing_s"],
-         "downswing_s": seg["downswing_s"], "tempo_ratio": seg["tempo_ratio"]}
+    club_speed = float(np.radians(seg["peak_gyro_dps"]) * CLUB_LEN)
+    release = float(np.clip((seg["peakgyro_t"] - seg["top"]) / max(seg["impact"] - seg["top"], 1e-6), 0, 2))
+    f = {"impact_g": imp_g, "peak_gyro_dps": seg["peak_gyro_dps"], "club_speed_ms": club_speed,
+         "backswing_s": seg["backswing_s"], "downswing_s": seg["downswing_s"],
+         "tempo_ratio": seg["tempo_ratio"], "release_ratio": release}
     f.update(quat_geometry(shot, seg)); f.update(spectral_downswing(shot, seg))
     return f, seg
+
+
+def swing_consistency(ids, names, M):
+    """Unsupervised repeatability signature across a session (no launch monitor needed): per-feature mean,
+    coefficient of variation, and the shots that are >2.5 sigma outliers (candidate mishits) on any feature."""
+    mean = M.mean(0); std = M.std(0); cv = std / (np.abs(mean) + 1e-9)
+    z = (M - mean) / (std + 1e-9)
+    outliers = {ids[i]: [names[j] for j in range(len(names)) if abs(z[i, j]) > 2.5] for i in range(len(ids))}
+    outliers = {k: v for k, v in outliers.items() if v}
+    return {"mean": mean, "std": std, "cv": cv, "outliers": outliers}
 
 
 def swing_timeline(shot, params: BakeParams | None = None):
