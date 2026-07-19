@@ -49,6 +49,14 @@ LEDMapper + Spatializer`.
 - **P2** — Raspberry-Pi runtime + real LED driver (`rpi-rgb-led-matrix` / WS2812 SPI / DMX) + HRTF/ambisonic
   spatializer. The Pi runs the same Composition at LED resolution (low pixel count → real-time).
 - **P3** — authoring editor: live-edit Compositions on the rig, package → deploy to Pi.
+- **P4 offline signal bake: DONE, verified (verify_bake.py G1–G5).** `cocycle/signal.py` bakes ANY time-series
+  file → a renderer-agnostic `Timeline` of 16 elementals at 144 fps (floor 90), global per-track normalization.
+  Signal-agnostic: `bake_signal(x, sr)` core; audio (pitch) and multi-channel MWD/vibration (RPM) prove out on
+  the same code — dominant-freq via FFT-autocorr + YIN CMND (valley-bottom + parabolic; naive argmax is
+  lag-biased, do not use it). `Timeline.to_features(i)` feeds existing scenes unchanged (= transpose to any
+  regime). Super-user control panel is GENERATED from the `BakeParams` schema (`cocycle/panel.py` →
+  `cocycle_panel.html`, gitignored); its config round-trips via `python -m cocycle.signal --config x.json`.
+  Real MWD ingest = a thin LAS/DLIS/binary → channel-array adapter, added when a sample file lands.
 
 ## Spec-Driven Development
 Work in phases: **Spec → Plan → Tasks → Implement → Verify.** Specs are immutable decision logs in

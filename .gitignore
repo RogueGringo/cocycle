@@ -7,3 +7,8 @@ led_montage.png
 *.output
 *.wav
 render_*.png
+
+# generated control panel (source: cocycle/panel.py)
+cocycle_panel.html
+timeline.npz
+cocycle_bake.json
