@@ -87,6 +87,18 @@ def fpca(sections, k=4, normalize=False):
     return scores, evr, Vt[:k]
 
 
+def quality_map(sheaf, channel="omega"):
+    """The launch-monitor-free coaching object: the golfer's glued canonical section, the per-phase gluing
+    tightness (their natural variation), and the per-shot per-phase obstruction z = |section - glued mean| /
+    tightness -- WHERE in the phase arc each swing breaks from their own template, in units of their own sigma."""
+    sec = sheaf[channel]; g = glue(sec)
+    z = np.abs(sec - g["mean"]) / (g["tightness"] + 1e-9)
+    worst_phase = z.argmax(1) / (sheaf["N"] - 1)                 # canonical phase of each shot's max obstruction
+    return {"ids": sheaf["ids"], "P": sheaf["P"], "N": sheaf["N"], "channel": channel,
+            "mean": g["mean"], "tightness": g["tightness"], "residual": g["residual"], "z": z,
+            "worst_phase": worst_phase}
+
+
 def joint_features(sheaf, k=4):
     """Glue channels: concatenate shape-normalized registered omega + energy, fPCA the joint object, and
     append each channel's cocycle residual. This is the section-level feature set (curve shape + obstruction)."""
